@@ -1,0 +1,8 @@
+# Maven のビルド成果物
+backend/target/
+
+# IDE / OS が作るファイル
+.idea/
+*.iml
+.vscode/
+.DS_Store

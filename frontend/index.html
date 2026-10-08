@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>じゃんけん（AWS学習用）</title>
+  <style>
+    /* ===== 見た目の設定（CSS） ===== */
+    :root {
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1f2933;
+      --muted: #6b7280;
+      --border: #d7dce2;
+      --accent: #2563eb;
+      --error-bg: #fdecea;
+      --error-text: #a4231c;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 24px 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+      line-height: 1.7;
+    }
+
+    .container {
+      max-width: 560px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      margin: 0 0 4px;
+    }
+
+    .lead {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      margin: 0 0 12px;
+    }
+
+    /* 手を選ぶボタン */
+    .hand-buttons {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .hand-button {
+      flex: 1 1 120px;
+      padding: 16px 8px;
+      font-size: 1.1rem;
+      font-family: inherit;
+      color: var(--text);
+      background: #fff;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .hand-button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .hand-button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .hand-button .emoji {
+      display: block;
+      font-size: 1.8rem;
+    }
+
+    /* 結果の表示 */
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dashed var(--border);
+      padding: 6px 0;
+    }
+
+    .result-row:last-of-type { border-bottom: none; }
+
+    .result-row .label { color: var(--muted); }
+
+    .result-row .value { font-weight: 700; }
+
+    #judgement {
+      margin-top: 12px;
+      font-size: 1.3rem;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    #status {
+      min-height: 1.7em;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* エラー表示 */
+    #error {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border: 1px solid #f3c2bd;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+      white-space: pre-wrap;
+    }
+
+    [hidden] { display: none !important; }
+
+    .note {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    code {
+      background: #eef1f5;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>じゃんけん</h1>
+    <p class="lead">
+      この画面はS3から配信され、ボタンを押すとEC2上のJava（Spring Boot）APIへ通信します。
+      相手の手の決定と勝敗判定はJava側で行います。
+    </p>
+
+    <section class="card">
+      <h2>手を選んでください</h2>
+      <div class="hand-buttons">
+        <button type="button" class="hand-button" data-hand="rock">
+          <span class="emoji" aria-hidden="true">✊</span>グー
+        </button>
+        <button type="button" class="hand-button" data-hand="scissors">
+          <span class="emoji" aria-hidden="true">✌️</span>チョキ
+        </button>
+        <button type="button" class="hand-button" data-hand="paper">
+          <span class="emoji" aria-hidden="true">✋</span>パー
+        </button>
+      </div>
+      <p id="status" aria-live="polite"></p>
+      <div id="error" role="alert" hidden></div>
+    </section>
+
+    <section class="card" id="result-card" hidden>
+      <h2>結果</h2>
+      <div class="result-row">
+        <span class="label">あなたの手</span>
+        <span class="value" id="player-hand"></span>
+      </div>
+      <div class="result-row">
+        <span class="label">相手の手</span>
+        <span class="value" id="computer-hand"></span>
+      </div>
+      <p id="judgement"></p>
+    </section>
+
+    <p class="note">
+      APIの接続先はこのページのJavaScript冒頭にある <code>API_BASE_URL</code> で変更できます。
+    </p>
+  </div>
+
+  <script>
+    // =========================================================
+    // APIの接続先。
+    //   ローカル確認時 : http://localhost:8080
+    //   EC2を使う場合  : http://<EC2のパブリックIPまたはDNS>:8080
+    // EC2を停止・起動してパブリックIPが変わった場合は、ここを書き換えて
+    // S3へ再アップロードする。末尾に / は付けない。
+    // =========================================================
+    const API_BASE_URL = "http://localhost:8080";
+
+    // APIがやり取りする値（rock / scissors / paper）と日本語表示の対応表。
+    const HAND_LABELS = {
+      rock: "グー",
+      scissors: "チョキ",
+      paper: "パー",
+    };
+
+    // 勝敗（プレイヤー視点）と日本語表示の対応表。
+    const RESULT_LABELS = {
+      win: "あなたの勝ち！",
+      lose: "あなたの負け…",
+      draw: "あいこ",
+    };
+
+    const handButtons = document.querySelectorAll(".hand-button");
+    const statusArea = document.getElementById("status");
+    const errorArea = document.getElementById("error");
+    const resultCard = document.getElementById("result-card");
+    const playerHandArea = document.getElementById("player-hand");
+    const computerHandArea = document.getElementById("computer-hand");
+    const judgementArea = document.getElementById("judgement");
+
+    // 各ボタンに「押されたらAPIを呼ぶ」処理を割り当てる。
+    handButtons.forEach((button) => {
+      button.addEventListener("click", () => playJanken(button.dataset.hand));
+    });
+
+    /** 通信中はボタンを無効化し、連打による二重送信を防ぐ。 */
+    function setLoading(isLoading) {
+      handButtons.forEach((button) => {
+        button.disabled = isLoading;
+      });
+      statusArea.textContent = isLoading ? "通信中です…" : "";
+    }
+
+    /** エラーメッセージを表示する。 */
+    function showError(message) {
+      errorArea.textContent = message;
+      errorArea.hidden = false;
+    }
+
+    /** エラー表示を消す。 */
+    function clearError() {
+      errorArea.textContent = "";
+      errorArea.hidden = true;
+    }
+
+    /** じゃんけんを1回行う。 */
+    async function playJanken(hand) {
+      setLoading(true);
+      clearError();
+
+      try {
+        const response = await fetch(API_BASE_URL + "/api/janken", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hand: hand }),
+        });
+
+        // HTTP 400 などのエラー応答。APIは {"message":"..."} を返す。
+        if (!response.ok) {
+          const errorMessage = await readErrorMessage(response);
+          showError("APIエラー（HTTP " + response.status + "）: " + errorMessage);
+          return;
+        }
+
+        const data = await response.json();
+        showResult(data);
+      } catch (error) {
+        // ネットワーク障害、APIが停止している、CORSで拒否された場合などはここに来る。
+        showError(
+          "APIに接続できませんでした。\n" +
+            "接続先: " + API_BASE_URL + "\n" +
+            "APIが起動しているか、API_BASE_URLとCORSの設定が正しいかを確認してください。"
+        );
+      } finally {
+        // 成功・失敗どちらでもボタンを押せる状態に戻す。
+        setLoading(false);
+      }
+    }
+
+    /** エラー応答のJSONからmessageを取り出す。JSONでなければ既定の文言を返す。 */
+    async function readErrorMessage(response) {
+      try {
+        const data = await response.json();
+        if (data && typeof data.message === "string") {
+          return data.message;
+        }
+      } catch (error) {
+        // JSONとして読めない場合は何もしない。
+      }
+      return "エラーの詳細を取得できませんでした。";
+    }
+
+    /** APIの結果を画面に表示する。表示はすべてtextContentで行う。 */
+    function showResult(data) {
+      playerHandArea.textContent = HAND_LABELS[data.playerHand] ?? data.playerHand;
+      computerHandArea.textContent = HAND_LABELS[data.computerHand] ?? data.computerHand;
+      judgementArea.textContent = RESULT_LABELS[data.result] ?? data.result;
+      resultCard.hidden = false;
+    }
+  </script>
+</body>
+</html>
