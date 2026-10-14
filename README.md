@@ -326,6 +326,34 @@ echo "http://$BUCKET.s3-website.ap-northeast-3.amazonaws.com/"
   - SSHを使う場合、TCP **22** を**管理者のグローバルIPだけ**に限定
   - S3のIPを許可する必要はありません。APIを呼ぶのは利用者のブラウザーです。
 
+#### この演習で実際に作成したリソース
+
+| 項目 | 値 |
+|---|---|
+| インスタンスID | `i-02fbeba48ad429d20` |
+| AMI | `ami-0fe44ab3b4e49ac93`（`al2023-ami-2023.12.20261012.0-kernel-6.1-x86_64`） |
+| インスタンスタイプ | `t3.micro`（EBS 8GB gp3、終了時に削除） |
+| アベイラビリティーゾーン | `ap-northeast-3a`（デフォルトVPCのサブネット `subnet-0e06658dd856266a0`） |
+| パブリックIP | `56.155.27.99`（**停止・起動で変わります**） |
+| セキュリティグループ | `sg-0b626584c5b83c5ee`（`janken-api-sg`）: 8080と22を管理者のグローバルIP `/32` のみ許可（実際の値は公開リポジトリーに書かず、AWSコンソールで確認してください） |
+| キーペア | `janken-key`（ed25519）。秘密鍵は `~/.ssh/janken-key.pem` に権限400で保存 |
+
+AMI IDはリージョンごとに違い、更新もされます。推測せず、次のように**実際に問い合わせた値**を使ってください。
+
+```bash
+# 【ローカル】Amazon Linux 2023 の最新AMIを調べる
+aws ec2 describe-images --region ap-northeast-3 --owners amazon \
+  --filters 'Name=name,Values=al2023-ami-2023.*-kernel-6.1-x86_64' 'Name=state,Values=available' \
+  --query 'reverse(sort_by(Images,&CreationDate))[0].{ImageId:ImageId,Name:Name}' --output json
+```
+
+SSHでの接続例：
+
+```bash
+# 【ローカル】
+ssh -i ~/.ssh/janken-key.pem ec2-user@56.155.27.99
+```
+
 #### (2) GitとJDKを入れて、リポジトリーをcloneする
 
 > ここからは**EC2にSSHでログインして**実行します。
@@ -531,10 +559,34 @@ HTTPSのページからHTTPのAPIへfetchすると、ブラウザーがMixed Con
 | S3バケット | `index.html` を削除し、バケットも削除する |
 | CloudFront（8章を試した場合） | ディストリビューションを無効化してから削除する |
 
+この演習で作ったリソースを消すコマンドです（【ローカル】で実行）。
+
 ```bash
-# 【ローカル】S3の中身とバケットを消す例
+# EC2インスタンスを終了する（EBSも一緒に削除される設定にしてあります）
+aws ec2 terminate-instances --region ap-northeast-3 --instance-ids i-02fbeba48ad429d20
+aws ec2 wait instance-terminated --region ap-northeast-3 --instance-ids i-02fbeba48ad429d20
+
+# セキュリティグループとキーペアを消す（インスタンス終了後でないと消せません）
+aws ec2 delete-security-group --region ap-northeast-3 --group-id sg-0b626584c5b83c5ee
+aws ec2 delete-key-pair --region ap-northeast-3 --key-name janken-key
+rm -f ~/.ssh/janken-key.pem
+
+# S3の中身とバケットを消す
 aws s3 rm s3://janken-frontend-bca2e226/index.html
 aws s3 rb s3://janken-frontend-bca2e226
+```
+
+一時的に止めるだけなら、インスタンスの停止でも課金（インスタンス時間）は止まります。
+ただし**停止・起動するとパブリックIPが変わる**ので、`API_BASE_URL` の更新が必要です。
+
+```bash
+# 【ローカル】停止と起動
+aws ec2 stop-instances --region ap-northeast-3 --instance-ids i-02fbeba48ad429d20
+aws ec2 start-instances --region ap-northeast-3 --instance-ids i-02fbeba48ad429d20
+
+# 起動後の新しいパブリックIPを確認する
+aws ec2 describe-instances --region ap-northeast-3 --instance-ids i-02fbeba48ad429d20 \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
 ```
 
 APIだけ止めたい場合は【EC2】で `sudo systemctl stop janken` と `sudo systemctl disable janken` を実行します（EC2の課金は止まりません）。
@@ -560,7 +612,7 @@ APIだけ止めたい場合は【EC2】で `sudo systemctl stop janken` と `sud
   - 許可していないオリジン → HTTP 403 で許可ヘッダーなし
 - `python3 -m http.server 8000` で `frontend/index.html` がHTTP 200で配信される
 
-### AWS上で実際に確認したこと（S3のみ）
+### AWS上で実際に確認したこと
 
 - バケット `janken-frontend-bca2e226` を `ap-northeast-3` に作成
 - ブロックパブリックアクセスを、ACLはブロックしたままバケットポリシーでの公開のみ許可する設定に変更
@@ -570,18 +622,47 @@ APIだけ止めたい場合は【EC2】で `sudo systemctl stop janken` と `sud
 - ウェブサイトエンドポイントがHTTP 200でページを返すことをcurlで確認
   （`s3-website.ap-northeast-3` のドット形式が正しく、ハイフン形式は名前解決できないことも確認済み）
 
-### 未確認のこと（この環境では実行していません）
+#### EC2
 
-- **EC2は未構築です。** インスタンスの作成、セキュリティグループの設定、`dnf` でのGit / JDKインストール、`git clone` とEC2上でのビルド
-- `deploy/janken.service` を使ったsystemdでの起動・再起動・ログ確認
-- S3の画面からEC2のAPIを呼ぶ、ブラウザーでの通しの動作
-  （S3にアップロード済みの `index.html` は `API_BASE_URL` が `http://localhost:8080` のままなので、
-  S3のページでボタンを押すとエラーになります。EC2を構築したら `API_BASE_URL` を書き換えて再アップロードします）
+- キーペア `janken-key` とセキュリティグループ `sg-0b626584c5b83c5ee`（8080・22を管理者IPの `/32` のみ許可）を作成
+- Amazon Linux 2023 / t3.micro のインスタンス `i-02fbeba48ad429d20` を起動し、SSHで接続
+- `dnf` で Git 2.50.1 と Amazon Corretto 21（`java-21-amazon-corretto-devel`）をインストール
+- GitHubから `git clone` し、EC2上で `./mvnw clean package` を実行 → **テスト39件が成功**してJARを生成
+- `/opt/janken/janken.jar` を配置し、`deploy/janken.service` を `/etc/systemd/system/` に登録
+- `systemctl enable --now janken` で起動、`is-enabled`=enabled / `is-active`=active を確認
+- 起動ログに `CORSで許可するオリジン: [http://janken-frontend-bca2e226...]` が出ることを確認
+- EC2上の `curl` とインターネット越しの `curl` の両方で `/api/health` と `/api/janken` が応答
 
-GitHubリポジトリーの作成とpush、S3バケットの構築は実施済みです。
+#### 画面とAPIの接続
 
-README中の `<EC2のパブリックIP>` と、一般的な手順説明に出てくる `<バケット名>`・`<リージョン>` はプレースホルダーです。
-実在するURLやリソースIDではないので、自分の環境の値に置き換えてください。
-GitHubのリポジトリーURL（`https://github.com/cheryy1974/aws-janken-app`）と
-S3のバケット名・ウェブサイトエンドポイントは、実在する値です。
-`deploy/janken.service` の `ALLOWED_ORIGINS` も、作成したS3エンドポイントに更新してあります。
+- `frontend/index.html` の `API_BASE_URL` を `http://56.155.27.99:8080` に変更してS3へ再アップロード
+- S3のオリジンからのプリフライト（OPTIONS）→ 200 と `Access-Control-Allow-Origin` が返る
+- S3のオリジンからの実リクエスト（POST）→ 200 と許可ヘッダー、じゃんけんの結果が返る
+- 許可していないオリジン → 403、許可ヘッダーなし
+- インターネット越しの不正入力 → 400 とJSONのメッセージ
+
+### 未確認のこと
+
+- **ブラウザーでボタンを押しての動作**（クリック操作が必要なため、コマンドからは未確認です）。
+  通信中のボタン無効化、API停止時のエラー表示と再操作は、S3のページを開いて実際に押して確認してください。
+- HTTPS構成（8章）は未実施です。
+
+一般的な手順説明に出てくる `<バケット名>`・`<リージョン>`・`<EC2のパブリックIP>` はプレースホルダーです。
+一方、「この演習で実際に作成した」と書かれた表の値（バケット名、ウェブサイトエンドポイント、
+インスタンスID、AMI ID、セキュリティグループID、パブリックIP）と
+GitHubのリポジトリーURL（`https://github.com/cheryy1974/aws-janken-app`）は実在する値です。
+
+**EC2を停止・起動するとパブリックIPが変わります。** その場合は
+`frontend/index.html` の `API_BASE_URL` を新しいIPに書き換えてS3へ再アップロードしてください。
+セキュリティグループの許可元IPも、接続元のグローバルIPが変わったら更新が必要です。
+
+```bash
+# 【ローカル】いまのグローバルIPを調べて、許可元を入れ替える
+MYIP=$(curl -sS https://checkip.amazonaws.com)
+aws ec2 authorize-security-group-ingress --region ap-northeast-3 \
+  --group-id sg-0b626584c5b83c5ee \
+  --ip-permissions "IpProtocol=tcp,FromPort=8080,ToPort=8080,IpRanges=[{CidrIp=${MYIP}/32}]"
+# 古いルールは describe-security-groups で確認し、revoke-security-group-ingress で削除する
+```
+
+自分のグローバルIPは個人を特定しうる情報なので、公開リポジトリーには書かないでください。
