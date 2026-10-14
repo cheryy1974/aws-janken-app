@@ -238,7 +238,7 @@ S3は「HTMLなどのファイルを置いて、ブラウザーに返す」役�
       "Effect": "Allow",
       "Principal": "*",
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::<バケット名>/*"
+      "Resource": "arn:aws:s3:::janken-frontend-bca2e226/*"
     }
   ]
 }
@@ -258,6 +258,61 @@ aws s3 cp frontend/index.html s3://<バケット名>/index.html --content-type '
 ```
 
 > 画面のJavaScriptにAWSのアクセスキーなどの秘密情報は書きません。S3に置いたファイルは誰でも読める状態になります。
+
+#### この演習で実際に作成したバケット
+
+| 項目 | 値 |
+|---|---|
+| バケット名 | `janken-frontend-bca2e226` |
+| リージョン | `ap-northeast-3`（大阪） |
+| ウェブサイトエンドポイント | <http://janken-frontend-bca2e226.s3-website.ap-northeast-3.amazonaws.com> |
+
+**エンドポイントの区切り文字はリージョンによって違います。** 大阪リージョンは
+`s3-website` のあとが**ドット**（`s3-website.ap-northeast-3`）で、東京などの古いリージョンは
+**ハイフン**（`s3-website-ap-northeast-1`）です。やはりURLは推測せず、コンソールに表示された値を使ってください。
+
+AWS CLIだけで同じ構成を作る手順（【ローカル】で実行）：
+
+```bash
+# 1. バケットを作る（バケット名は全世界で一意にする）
+BUCKET=janken-frontend-$(openssl rand -hex 4)
+echo $BUCKET
+aws s3api create-bucket --bucket "$BUCKET" --region ap-northeast-3 \
+  --create-bucket-configuration LocationConstraint=ap-northeast-3
+
+# 2. ACLでの公開は引き続きブロックし、バケットポリシーでの公開だけを許可する
+aws s3api put-public-access-block --bucket "$BUCKET" \
+  --public-access-block-configuration \
+  'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false'
+
+# 3. 静的ウェブサイトホスティングを有効にする
+aws s3api put-bucket-website --bucket "$BUCKET" \
+  --website-configuration '{"IndexDocument":{"Suffix":"index.html"}}'
+
+# 4. このバケットのオブジェクト読み取りだけを許可するポリシーを当てる
+cat > /tmp/bucket-policy.json <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadForJankenFrontend",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::$BUCKET/*"
+    }
+  ]
+}
+JSON
+aws s3api put-bucket-policy --bucket "$BUCKET" --policy file:///tmp/bucket-policy.json
+
+# 5. 画面をアップロードする
+aws s3 cp frontend/index.html "s3://$BUCKET/index.html" \
+  --content-type 'text/html; charset=utf-8'
+
+# 6. ブラウザーで開いて確認する
+echo "http://$BUCKET.s3-website.ap-northeast-3.amazonaws.com/"
+```
 
 ### 4-3. EC2でAPIを動かす
 
@@ -320,16 +375,17 @@ sudo cp ../deploy/janken.service /etc/systemd/system/janken.service
 sudo vi /etc/systemd/system/janken.service
 ```
 
-`janken.service` の次の行を、自分のS3エンドポイントに合わせます。**末尾の `/` やパスは付けません。**
+`janken.service` には、この演習で作成したバケットのエンドポイントを設定済みです。
+別のバケットを使う場合は次の行を書き換えます。**末尾の `/` やパスは付けません。**
 
 ```
-Environment=ALLOWED_ORIGINS=http://<バケット名>.s3-website-<リージョン>.amazonaws.com
+Environment=ALLOWED_ORIGINS=http://janken-frontend-bca2e226.s3-website.ap-northeast-3.amazonaws.com
 ```
 
 ローカルの画面からも試したい場合はカンマ区切りで並べます。
 
 ```
-Environment=ALLOWED_ORIGINS=http://<バケット名>.s3-website-<リージョン>.amazonaws.com,http://localhost:8000
+Environment=ALLOWED_ORIGINS=http://janken-frontend-bca2e226.s3-website.ap-northeast-3.amazonaws.com,http://localhost:8000
 ```
 
 ```bash
@@ -477,8 +533,8 @@ HTTPSのページからHTTPのAPIへfetchすると、ブラウザーがMixed Con
 
 ```bash
 # 【ローカル】S3の中身とバケットを消す例
-aws s3 rm s3://<バケット名>/index.html
-aws s3 rb s3://<バケット名>
+aws s3 rm s3://janken-frontend-bca2e226/index.html
+aws s3 rb s3://janken-frontend-bca2e226
 ```
 
 APIだけ止めたい場合は【EC2】で `sudo systemctl stop janken` と `sudo systemctl disable janken` を実行します（EC2の課金は止まりません）。
@@ -504,14 +560,28 @@ APIだけ止めたい場合は【EC2】で `sudo systemctl stop janken` と `sud
   - 許可していないオリジン → HTTP 403 で許可ヘッダーなし
 - `python3 -m http.server 8000` で `frontend/index.html` がHTTP 200で配信される
 
-### 未確認のこと（AWSアカウントが必要なため、この環境では実行していません）
+### AWS上で実際に確認したこと（S3のみ）
 
-- S3バケットの作成、静的ウェブサイトホスティングの有効化、バケットポリシーの適用、実際のウェブサイトエンドポイント
-- EC2インスタンスの作成、セキュリティグループの設定、`dnf` でのGit / JDKインストール、`git clone` とEC2上でのビルド
+- バケット `janken-frontend-bca2e226` を `ap-northeast-3` に作成
+- ブロックパブリックアクセスを、ACLはブロックしたままバケットポリシーでの公開のみ許可する設定に変更
+- 静的ウェブサイトホスティングを有効化（インデックスドキュメント `index.html`）
+- バケットポリシーで、このバケットのオブジェクト読み取りだけを許可
+- `index.html` をアップロード（`Content-Type: text/html; charset=utf-8`）
+- ウェブサイトエンドポイントがHTTP 200でページを返すことをcurlで確認
+  （`s3-website.ap-northeast-3` のドット形式が正しく、ハイフン形式は名前解決できないことも確認済み）
+
+### 未確認のこと（この環境では実行していません）
+
+- **EC2は未構築です。** インスタンスの作成、セキュリティグループの設定、`dnf` でのGit / JDKインストール、`git clone` とEC2上でのビルド
 - `deploy/janken.service` を使ったsystemdでの起動・再起動・ログ確認
 - S3の画面からEC2のAPIを呼ぶ、ブラウザーでの通しの動作
-（GitHubリポジトリーの作成とpushは実施済みです。）
+  （S3にアップロード済みの `index.html` は `API_BASE_URL` が `http://localhost:8080` のままなので、
+  S3のページでボタンを押すとエラーになります。EC2を構築したら `API_BASE_URL` を書き換えて再アップロードします）
 
-README中の `<バケット名>`、`<リージョン>`、`<EC2のパブリックIP>` はプレースホルダーです。
+GitHubリポジトリーの作成とpush、S3バケットの構築は実施済みです。
+
+README中の `<EC2のパブリックIP>` と、一般的な手順説明に出てくる `<バケット名>`・`<リージョン>` はプレースホルダーです。
 実在するURLやリソースIDではないので、自分の環境の値に置き換えてください。
-GitHubのリポジトリーURL（`https://github.com/cheryy1974/aws-janken-app`）だけは実在する値です。
+GitHubのリポジトリーURL（`https://github.com/cheryy1974/aws-janken-app`）と
+S3のバケット名・ウェブサイトエンドポイントは、実在する値です。
+`deploy/janken.service` の `ALLOWED_ORIGINS` も、作成したS3エンドポイントに更新してあります。
